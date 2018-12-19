@@ -32,7 +32,7 @@ namespace FRAM {                                    // Moved to namespace instea
 };
 
 const int versionNumber = 9;                        // Increment this number each time the memory map is changed
-const char releaseNumber[6] = "0.75";               // Displays the release on the menu
+const char releaseNumber[6] = "0.76";               // Displays the release on the menu
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                      // Library for FRAM functions
@@ -114,6 +114,7 @@ unsigned long currentEvent = 0;    // Time for the current sensor event
 int hourlyPersonCount = 0;                          // hourly counter
 int hourlyPersonCountSent = 0;                      // Person count in flight to Ubidots
 int dailyPersonCount = 0;                           // daily counter
+int wakesPerHour = 0;                               // Number of times we wake - diagnostic
 
 void setup()                                        // Note: Disconnected Setup()
 {
@@ -131,7 +132,7 @@ void setup()                                        // Note: Disconnected Setup(
   pinMode(ledPower,OUTPUT);                         // Turn on the lights
   pinSetFast(ledPower);                             // Turns on the LED on the pressure sensor board
 
-  watchdogISR();                                    // Pet the watchdog
+  petWatchdog();                                    // Pet the watchdog
 
   char responseTopic[125];
   String deviceID = System.deviceID();              // Multiple Electrons share the same hook - keeps things straight
@@ -163,15 +164,11 @@ void setup()                                        // Note: Disconnected Setup(
   Particle.function("Set-Debounce",setDebounce);
 
   if (!fram.begin()) {                                                // You can stick the new i2c addr in here, e.g. begin(0x51);
-    resetTimeStamp = millis();                                        // Can't communicate with FRAM - fatal error
     state = ERROR_STATE;
   }
   else if (FRAMread8(FRAM::versionAddr) != versionNumber) {           // Check to see if the memory map in the sketch matches the data on the chip
     ResetFRAM();                                                      // Reset the FRAM to correct the issue
-    if (FRAMread8(FRAM::versionAddr) != versionNumber) {
-      resetTimeStamp = millis();
-      state = ERROR_STATE;                                            // Resetting did not fix the issue
-    }
+    if (FRAMread8(FRAM::versionAddr) != versionNumber)state = ERROR_STATE; // Resetting did not fix the issue
     else {
       FRAMwrite8(FRAM::controlRegisterAddr,0);                        // Need to reset so not in low power or low battery mode
       FRAMwrite8(FRAM::openTimeAddr,0);                               // These set the defaults if the FRAM is erased
@@ -232,7 +229,7 @@ void setup()                                        // Note: Disconnected Setup(
     }
   }
 
-  attachInterrupt(intPin,sensorISR,RISING);                           // Pressure Sensor interrupt from low to high
+  attachInterrupt(intPin, sensorISR, RISING);                         // Pressure Sensor interrupt from low to high
   attachInterrupt(wakeUpPin, watchdogISR, RISING);                    // The watchdog timer will signal us and we have to respond
 
   if (connectionMode) {
@@ -258,6 +255,7 @@ void loop()
     if (hourlyPersonCountSent) {                                      // Cleared here as there could be counts coming in while "in Flight"
       hourlyPersonCount -= hourlyPersonCountSent;                     // Confirmed that count was recevied - clearing
       FRAMwrite16(FRAM::currentHourlyCountAddr, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
+      wakesPerHour = 0;
       hourlyPersonCountSent = 0;                                      // Zero out the count until next reporting period
     }
     if (lowPowerMode && (millis() - stayAwakeTimeStamp) > stayAwake) state = NAPPING_STATE;  // When in low power mode, we can nap between taps
@@ -302,6 +300,7 @@ void loop()
       FRAMwrite8(FRAM::controlRegisterAddr,controlRegisterValue);     // Write to the control register
     }
     stayAwake = debounce;                                             // Once we come into this function, we need to reset stayAwake as it changes at the top of the hour
+    wakesPerHour++;                                                   // Increment the wakes per hour count
     int wakeInSeconds = constrain(wakeBoundary - Time.now() % wakeBoundary, 1, wakeBoundary);
     System.sleep(intPin, RISING, wakeInSeconds);                      // Sensor will wake us with an interrupt or timeout at the hour
     if (System.wokenUpByPin()) {
@@ -329,6 +328,7 @@ void loop()
   case REPORTING_STATE:
     if (verboseMode && state != oldState) publishStateTransition();
     if (!(0b00010000 & controlRegisterValue)) {
+      Cellular.on();
       controlRegisterValue = FRAMread8(FRAM::controlRegisterAddr);      // Get the control register (general approach)
       controlRegisterValue = (0b00010000 | controlRegisterValue);       // Turn on connected mode 1 = connected and 0 = disconnected
       FRAMwrite8(FRAM::controlRegisterAddr,controlRegisterValue);       // Write to the control register
@@ -389,7 +389,6 @@ void recordCount() // This is where we check to see if an interrupt is set when 
     pinResetFast(blueLED);
     return;
   }
-
   hourlyPersonCount++;                                                // Increment the PersonCount
   FRAMwrite16(FRAM::currentHourlyCountAddr, hourlyPersonCount);       // Load Hourly Count to memory
   dailyPersonCount++;                                                 // Increment the PersonCount
@@ -402,8 +401,9 @@ void recordCount() // This is where we check to see if an interrupt is set when 
   }
 
   if (!digitalRead(userSwitch) && lowPowerMode) {                     // A low value means someone is pushing this button - will trigger a send to Ubidots and take out of low power mode
+    Cellular.on();
     Particle.connect();
-    waitFor(Particle.connected,20000);
+    waitFor(Particle.connected,30000);
     Particle.process();
     if (Particle.connected()) Particle.publish("Mode","Normal Operations");
     controlRegisterValue = FRAMread8(FRAM::controlRegisterAddr);      // Load the control register
@@ -419,8 +419,10 @@ void recordCount() // This is where we check to see if an interrupt is set when 
 void sendEvent()
 {
   char data[256];                                                     // Store the date in this character array - not global
-  snprintf(data, sizeof(data), "{\"hourly\":%i, \"daily\":%i,\"battery\":%i, \"temp\":%i, \"resets\":%i}",hourlyPersonCount, dailyPersonCount, stateOfCharge, temperatureF,resetCount);
-  Particle.publish("Ubidots-Hook", data, PRIVATE);
+  float average = 500.0;
+  if (wakesPerHour > 0) average = (float)hourlyPersonCount/wakesPerHour;
+  snprintf(data, sizeof(data), "{\"hourly\":%i, \"daily\":%i,\"battery\":%i, \"temp\":%i, \"resets\":%i, \"average\":%3.1f}",hourlyPersonCount, dailyPersonCount, stateOfCharge, temperatureF,resetCount,average);
+  Particle.publish("Ubidots-Test-Hook", data, PRIVATE);
   webhookTimeStamp = millis();
   hourlyPersonCountSent = hourlyPersonCount;                          // This is the number that was sent to Ubidots - will be subtracted once we get confirmation
   currentHourlyPeriod = Time.hour();                                  // Change the time period
