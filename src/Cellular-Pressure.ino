@@ -32,7 +32,7 @@ namespace FRAM {                                    // Moved to namespace instea
 };
 
 const int versionNumber = 9;                        // Increment this number each time the memory map is changed
-const char releaseNumber[6] = "0.76";               // Displays the release on the menu
+const char releaseNumber[6] = "0.80";               // Displays the release on the menu
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                      // Library for FRAM functions
@@ -97,9 +97,10 @@ const char* levels[6] = {"Poor", "Low", "Medium", "Good", "Very Good", "Great"};
 // Time Related Variables
 int openTime;                                       // Park Opening time - (24 hr format) sets waking
 int closeTime;                                      // Park Closing time - (24 hr format) sets sleep
-byte lastHour = 0;                                  // For recording the startup values
-byte lastDate = 0;                                  // These values make sure we record events if time has lapsed
+byte currentDailyPeriod;                            // Current day
 byte currentHourlyPeriod;                           // This is where we will know if the period changed
+byte currentMinutePeriod;                           // Current minute
+
 
 // Battery monitoring
 int stateOfCharge = 0;                              // stores battery charge level value
@@ -114,7 +115,11 @@ unsigned long currentEvent = 0;    // Time for the current sensor event
 int hourlyPersonCount = 0;                          // hourly counter
 int hourlyPersonCountSent = 0;                      // Person count in flight to Ubidots
 int dailyPersonCount = 0;                           // daily counter
+
+// These are diagnostic measures that I am playing with
 int wakesPerHour = 0;                               // Number of times we wake - diagnostic
+int maxMin = 0;                                     // What is the current maximum count in a minute for this reporting period
+int currentMinuteCount = 0;                            // What is the count for the current minute
 
 void setup()                                        // Note: Disconnected Setup()
 {
@@ -163,30 +168,19 @@ void setup()                                        // Note: Disconnected Setup(
   Particle.function("Set-Close",setCloseTime);
   Particle.function("Set-Debounce",setDebounce);
 
-  if (!fram.begin()) {                                                // You can stick the new i2c addr in here, e.g. begin(0x51);
-    state = ERROR_STATE;
-  }
+  if (!fram.begin()) state = ERROR_STATE;                             // You can stick the new i2c addr in here, e.g. begin(0x51);
   else if (FRAMread8(FRAM::versionAddr) != versionNumber) {           // Check to see if the memory map in the sketch matches the data on the chip
     ResetFRAM();                                                      // Reset the FRAM to correct the issue
     if (FRAMread8(FRAM::versionAddr) != versionNumber)state = ERROR_STATE; // Resetting did not fix the issue
-    else {
-      FRAMwrite8(FRAM::controlRegisterAddr,0);                        // Need to reset so not in low power or low battery mode
-      FRAMwrite8(FRAM::openTimeAddr,0);                               // These set the defaults if the FRAM is erased
-      FRAMwrite8(FRAM::closeTimeAddr,23);                             // This will ensure the device does not sleep
-      FRAMwrite8(FRAM::debounceAddr,5);                               // Sets a default debounce of 5 dSec
-    }
   }
 
   resetCount = FRAMread8(FRAM::resetCountAddr);                                   // Retrive system recount data from FRAM
   if (System.resetReason() == RESET_REASON_PIN_RESET || System.resetReason() == RESET_REASON_USER)  // Check to see if we are starting from a pin reset or a reset in the sketch
   {
     resetCount++;
-    FRAMwrite8(FRAM::resetCountAddr,static_cast<uint8_t>(resetCount));          // If so, store incremented number - watchdog must have done This
+    FRAMwrite8(FRAM::resetCountAddr,static_cast<uint8_t>(resetCount));// If so, store incremented number - watchdog must have done This
   }
-  if (resetCount >=6) {                                               // If we get to resetCount 4, we are resetting without entering the main loop
-    FRAMwrite8(FRAM::resetCountAddr,4);                               // The hope here is to get to the main loop and report a value of 4 which will indicate this issue is occuring
-    fullModemReset();                                                 // This will reset the modem and the device will reboot
-  }
+  if (resetCount >=4) state = ERROR_STATE;                            // If we get to resetCount 4, we are resetting without entering the main loop
 
   // Check and import values from FRAM
   debounce = 100*FRAMread8(FRAM::debounceAddr);
@@ -198,7 +192,7 @@ void setup()                                        // Note: Disconnected Setup(
   if (closeTime < 1 && closeTime > 23) closeTime = 23;
   int8_t tempFRAMvalue = FRAMread8(FRAM::timeZoneAddr);
   if (tempFRAMvalue <= 12 && tempFRAMvalue >= -12)  Time.zone((float)tempFRAMvalue);  // Load Timezone from FRAM
-  else Time.zone(0);                                                  // Default is GMT in case proper value not in FRAM
+  else Time.zone(-5);                                                  // Default is EST in case proper value not in FRAM
 
   controlRegisterValue = FRAMread8(FRAM::controlRegisterAddr);        // Read the Control Register for system modes
   lowPowerMode    = (0b00000001 & controlRegisterValue);              // Bitwise AND to set the lowPowerMode flag from control Register
@@ -209,10 +203,17 @@ void setup()                                        // Note: Disconnected Setup(
   PMICreset();                                                        // Executes commands that set up the PMIC for Solar charging
 
   currentHourlyPeriod = Time.hour();                                  // Sets the hour period for when the count starts (see #defines)
+  currentMinutePeriod = Time.minute();                                // *** Diagnostic code - set the minute period
+  currentDailyPeriod = Time.day();                                    // What day is it?
+
   // Deterimine when the last counts were taken check when starting test to determine if we reload values or start counts over
   time_t unixTime = FRAMread32(FRAM::currentCountsTimeAddr);          // Need to reload last recorded event
-  lastHour = Time.hour(unixTime);
-  lastDate = Time.day(unixTime);
+  if(currentDailyPeriod != Time.day(unixTime)) {                      // What if we wake up and it is a new day - Time to reset and start with a clean slate
+    FRAMwrite16(FRAM::currentDailyCountAddr, 0);                      // Reset the counts in FRAM as well
+    FRAMwrite16(FRAM::currentHourlyCountAddr, 0);
+    FRAMwrite32(FRAM::currentCountsTimeAddr,Time.now());              // Set the time context to the new day
+    FRAMwrite8(FRAM::resetCountAddr,0);
+  }
   dailyPersonCount = FRAMread16(FRAM::currentDailyCountAddr);         // Load Daily Count from memory
   hourlyPersonCount = FRAMread16(FRAM::currentHourlyCountAddr);       // Load Hourly Count from memory
 
@@ -278,9 +279,6 @@ void loop()
       Cellular.off();
       delay(1000);
     }
-    FRAMwrite16(FRAM::currentDailyCountAddr, 0);                      // Reset the counts in FRAM as well
-    FRAMwrite8(FRAM::resetCountAddr,0);
-    FRAMwrite16(FRAM::currentHourlyCountAddr, 0);
     digitalWrite(blueLED,LOW);                                        // Turn off the LED
     digitalWrite(tmp36Shutdwn, LOW);                                  // Turns off the temp sensor
     int wakeInSeconds = constrain(wakeBoundary - Time.now() % wakeBoundary, 1, wakeBoundary);
@@ -378,7 +376,7 @@ void recordCount() // This is where we check to see if an interrupt is set when 
   sensorDetect = false;                                               // Reset the flag
   pinSetFast(blueLED);                                                // Turn on the blue LED
 
-  if (millis() - currentEvent >= debounce || awokeFromNap) {          // If this event is outside the debounce time, proceed
+  if (millis() - currentEvent -100 >= debounce || awokeFromNap) {     // If this event is outside the debounce time, proceed
     currentEvent = millis();
     awokeFromNap = false;                                             // Reset the awoke flag
     while(millis() - currentEvent <= debounce) {};                    // Keep us tied up here until the debounce time is almost up
@@ -389,11 +387,21 @@ void recordCount() // This is where we check to see if an interrupt is set when 
     pinResetFast(blueLED);
     return;
   }
+
+  // Diagnostic code
+  if (currentMinutePeriod != Time.minute()) {                         // Done counting for the last minute
+    currentMinutePeriod = Time.minute();                              // Reset period
+    if (currentMinuteCount > maxMin) maxMin = currentMinuteCount;     // Save only if it is the new maxMin
+    currentMinuteCount = 1;                                           // Reset for the new minute
+  }
+  else currentMinuteCount++;
+  // End diagnostic code
+
   hourlyPersonCount++;                                                // Increment the PersonCount
   FRAMwrite16(FRAM::currentHourlyCountAddr, hourlyPersonCount);       // Load Hourly Count to memory
   dailyPersonCount++;                                                 // Increment the PersonCount
   FRAMwrite16(FRAM::currentDailyCountAddr, dailyPersonCount);         // Load Daily Count to memory
-  FRAMwrite32(FRAM::currentCountsTimeAddr, currentEvent);             // Write to FRAM - this is so we know when the last counts were saved
+  FRAMwrite32(FRAM::currentCountsTimeAddr, Time.now());             // Write to FRAM - this is so we know when the last counts were saved
   if (verboseMode && Particle.connected()) {
     char data[256];                                                   // Store the date in this character array - not global
     snprintf(data, sizeof(data), "Car, hourly count: %i, daily count: %i, debounce = %i",hourlyPersonCount,dailyPersonCount,debounce);
@@ -419,10 +427,11 @@ void recordCount() // This is where we check to see if an interrupt is set when 
 void sendEvent()
 {
   char data[256];                                                     // Store the date in this character array - not global
+  if (currentMinuteCount > maxMin) maxMin = currentMinuteCount;       // Diagnostic code - cut when done
   float average = 500.0;
   if (wakesPerHour > 0) average = (float)hourlyPersonCount/wakesPerHour;
-  snprintf(data, sizeof(data), "{\"hourly\":%i, \"daily\":%i,\"battery\":%i, \"temp\":%i, \"resets\":%i, \"average\":%3.1f}",hourlyPersonCount, dailyPersonCount, stateOfCharge, temperatureF,resetCount,average);
-  Particle.publish("Ubidots-Test-Hook", data, PRIVATE);
+  snprintf(data, sizeof(data), "{\"hourly\":%i, \"daily\":%i,\"battery\":%i, \"temp\":%i, \"resets\":%i, \"average\":%3.1f, \"maxmin\":%i}",hourlyPersonCount, dailyPersonCount, stateOfCharge, temperatureF,resetCount,average,maxMin);
+  Particle.publish("Ubidots-Test-Hook-2", data, PRIVATE);
   webhookTimeStamp = millis();
   hourlyPersonCountSent = hourlyPersonCount;                          // This is the number that was sent to Ubidots - will be subtracted once we get confirmation
   currentHourlyPeriod = Time.hour();                                  // Change the time period
