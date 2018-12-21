@@ -207,13 +207,17 @@ void setup()                                        // Note: Disconnected Setup(
   currentDailyPeriod = Time.day();                                    // What day is it?
 
   // Deterimine when the last counts were taken check when starting test to determine if we reload values or start counts over
-  time_t unixTime = FRAMread32(FRAM::currentCountsTimeAddr);          // Need to reload last recorded event
-  if(currentDailyPeriod != Time.day(unixTime)) {                      // What if we wake up and it is a new day - Time to reset and start with a clean slate
+  time_t unixTime = FRAMread32(FRAM::currentCountsTimeAddr);          // Need to reload last recorded event - current periods set from this event
+  currentHourlyPeriod = Time.hour(unixTime);                          // Sets the hour period for when the count starts
+  currentMinutePeriod = Time.minute(unixTime);                        // *** Diagnostic code - set the minute period
+  currentDailyPeriod = Time.day(unixTime);                            // What day is it?
+  if(currentDailyPeriod != Time.day()) {                              // What if we wake up and it is a new day - Time to reset and start with a clean slate
     FRAMwrite16(FRAM::currentDailyCountAddr, 0);                      // Reset the counts in FRAM as well
     FRAMwrite16(FRAM::currentHourlyCountAddr, 0);
     FRAMwrite32(FRAM::currentCountsTimeAddr,Time.now());              // Set the time context to the new day
     FRAMwrite8(FRAM::resetCountAddr,0);
   }
+  else if (currentHourlyPeriod != Time.hour()) state = REPORTING_STATE;
   dailyPersonCount = FRAMread16(FRAM::currentDailyCountAddr);         // Load Daily Count from memory
   hourlyPersonCount = FRAMread16(FRAM::currentHourlyCountAddr);       // Load Hourly Count from memory
 
@@ -241,7 +245,7 @@ void setup()                                        // Note: Disconnected Setup(
 
   takeMeasurements();                                                 // Populates values so you can read them before the hour
 
-  if (state != ERROR_STATE) state = IDLE_STATE;                       // IDLE unless error from above code
+  if (state == INITIALIZATION_STATE) state = IDLE_STATE;              // IDLE unless otherwise from above code
 
   stayAwake = stayAwakeLong;                                          // Keeps Electron awake after reboot - helps with recovery
 }
