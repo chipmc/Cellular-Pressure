@@ -32,7 +32,7 @@ namespace FRAM {                                    // Moved to namespace instea
 };
 
 const int versionNumber = 9;                        // Increment this number each time the memory map is changed
-const char releaseNumber[6] = "0.81";               // Displays the release on the menu
+const char releaseNumber[6] = "0.82";               // Displays the release on the menu
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                      // Library for FRAM functions
@@ -123,6 +123,13 @@ int currentMinuteCount = 0;                            // What is the count for 
 
 void setup()                                        // Note: Disconnected Setup()
 {
+  /* Setup is run for three reasons once we deploy a sensor:
+       1) When you deploy the sensor
+       2) Each hour while the device is sleeping
+       3) After a reset event
+    All three of these have some common code - this will go first then we will set a conditional
+    to determine which of the three we are in and finish the code
+  */
   pinMode(wakeUpPin,INPUT);                         // This pin is active HIGH
   pinMode(userSwitch,INPUT);                        // Momentary contact button on board for direct user input
   pinMode(blueLED, OUTPUT);                         // declare the Blue LED Pin as an output
@@ -137,7 +144,8 @@ void setup()                                        // Note: Disconnected Setup(
   pinMode(ledPower,OUTPUT);                         // Turn on the lights
   pinSetFast(ledPower);                             // Turns on the LED on the pressure sensor board
 
-  petWatchdog();                                    // Pet the watchdog
+  petWatchdog();                                    // Pet the watchdog - not necessary in a power on event but just in case
+  attachInterrupt(wakeUpPin, watchdogISR, RISING);  // The watchdog timer will signal us and we have to respond
 
   char responseTopic[125];
   String deviceID = System.deviceID();              // Multiple Electrons share the same hook - keeps things straight
@@ -168,6 +176,7 @@ void setup()                                        // Note: Disconnected Setup(
   Particle.function("Set-Close",setCloseTime);
   Particle.function("Set-Debounce",setDebounce);
 
+  // Load FRAM and reset variables to their correct values
   if (!fram.begin()) state = ERROR_STATE;                             // You can stick the new i2c addr in here, e.g. begin(0x51);
   else if (FRAMread8(FRAM::versionAddr) != versionNumber) {           // Check to see if the memory map in the sketch matches the data on the chip
     ResetFRAM();                                                      // Reset the FRAM to correct the issue
@@ -206,18 +215,7 @@ void setup()                                        // Note: Disconnected Setup(
   currentMinutePeriod = Time.minute();                                // *** Diagnostic code - set the minute period
   currentDailyPeriod = Time.day();                                    // What day is it?
 
-  // Deterimine when the last counts were taken check when starting test to determine if we reload values or start counts over
   time_t unixTime = FRAMread32(FRAM::currentCountsTimeAddr);          // Need to reload last recorded event - current periods set from this event
-  currentHourlyPeriod = Time.hour(unixTime);                          // Sets the hour period for when the count starts
-  currentMinutePeriod = Time.minute(unixTime);                        // *** Diagnostic code - set the minute period
-  currentDailyPeriod = Time.day(unixTime);                            // What day is it?
-  if(currentDailyPeriod != Time.day()) {                              // What if we wake up and it is a new day - Time to reset and start with a clean slate
-    FRAMwrite16(FRAM::currentDailyCountAddr, 0);                      // Reset the counts in FRAM as well
-    FRAMwrite16(FRAM::currentHourlyCountAddr, 0);
-    FRAMwrite32(FRAM::currentCountsTimeAddr,Time.now());              // Set the time context to the new day
-    FRAMwrite8(FRAM::resetCountAddr,0);
-  }
-  // else if (currentHourlyPeriod != Time.hour()) state = REPORTING_STATE;
   dailyPersonCount = FRAMread16(FRAM::currentDailyCountAddr);         // Load Daily Count from memory
   hourlyPersonCount = FRAMread16(FRAM::currentHourlyCountAddr);       // Load Hourly Count from memory
 
@@ -234,20 +232,30 @@ void setup()                                        // Note: Disconnected Setup(
     }
   }
 
-  attachInterrupt(intPin, sensorISR, RISING);                         // Pressure Sensor interrupt from low to high
-  attachInterrupt(wakeUpPin, watchdogISR, RISING);                    // The watchdog timer will signal us and we have to respond
+  // Here is where the code diverges based on the state
+  // Deterimine when the last counts were taken check when starting test to determine if we reload values or start counts over
+  if (currentDailyPeriod != Time.day(unixTime)) {                     // The device is waking up in a new day or is a new install
+    FRAMwrite16(FRAM::currentDailyCountAddr, 0);                      // Reset the counts in FRAM as well
+    FRAMwrite16(FRAM::currentHourlyCountAddr, 0);
+    FRAMwrite32(FRAM::currentCountsTimeAddr,Time.now());              // Set the time context to the new day
+    FRAMwrite8(FRAM::resetCountAddr,0);
+    hourlyPersonCount = dailyPersonCount = resetCount = 0;            // Reset everything for the day
+  }
+  if ((Time.hour() >= closeTime || Time.hour() < openTime)) {}       // The park is closed - sleep
+  else {                                                              // Park is open let's get ready for the day
+    attachInterrupt(intPin, sensorISR, RISING);                       // Pressure Sensor interrupt from low to high
 
-  if (connectionMode) {
-    Particle.connect();
-    waitFor(Particle.connected,20000);
-    Particle.process();
+    if (connectionMode) {                                             // Only going to connect if we are in connectionMode
+      Particle.connect();
+      waitFor(Particle.connected,20000);                              // 20 seconds then we timeout  -- *** need to add disconnected option and test
+      Particle.process();
+    }
+
+    takeMeasurements();                                                 // Populates values so you can read them before the hour
+    stayAwake = stayAwakeLong;                                          // Keeps Electron awake after reboot - helps with recovery
   }
 
-  takeMeasurements();                                                 // Populates values so you can read them before the hour
-
   if (state == INITIALIZATION_STATE) state = IDLE_STATE;              // IDLE unless otherwise from above code
-
-  stayAwake = stayAwakeLong;                                          // Keeps Electron awake after reboot - helps with recovery
 }
 
 void loop()
