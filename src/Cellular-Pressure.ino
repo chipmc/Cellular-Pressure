@@ -32,7 +32,7 @@ namespace FRAM {                                    // Moved to namespace instea
 };
 
 const int versionNumber = 9;                        // Increment this number each time the memory map is changed
-const char releaseNumber[6] = "0.80";               // Displays the release on the menu
+const char releaseNumber[6] = "0.81";               // Displays the release on the menu
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                      // Library for FRAM functions
@@ -217,7 +217,7 @@ void setup()                                        // Note: Disconnected Setup(
     FRAMwrite32(FRAM::currentCountsTimeAddr,Time.now());              // Set the time context to the new day
     FRAMwrite8(FRAM::resetCountAddr,0);
   }
-  else if (currentHourlyPeriod != Time.hour()) state = REPORTING_STATE;
+  // else if (currentHourlyPeriod != Time.hour()) state = REPORTING_STATE;
   dailyPersonCount = FRAMread16(FRAM::currentDailyCountAddr);         // Load Daily Count from memory
   hourlyPersonCount = FRAMread16(FRAM::currentHourlyCountAddr);       // Load Hourly Count from memory
 
