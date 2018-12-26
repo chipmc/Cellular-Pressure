@@ -32,7 +32,7 @@ namespace FRAM {                                    // Moved to namespace instea
 };
 
 const int versionNumber = 9;                        // Increment this number each time the memory map is changed
-const char releaseNumber[6] = "0.82";               // Displays the release on the menu
+const char releaseNumber[6] = "0.83";               // Displays the release on the menu
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                      // Library for FRAM functions
@@ -312,8 +312,9 @@ void loop()
     stayAwake = debounce;                                             // Once we come into this function, we need to reset stayAwake as it changes at the top of the hour
     wakesPerHour++;                                                   // Increment the wakes per hour count
     int wakeInSeconds = constrain(wakeBoundary - Time.now() % wakeBoundary, 1, wakeBoundary);
+    petWatchdog();                                                    // Reset the watchdog
     System.sleep(intPin, RISING, wakeInSeconds);                      // Sensor will wake us with an interrupt or timeout at the hour
-    if (System.wokenUpByPin()) {
+    if (sensorDetect) {
        awokeFromNap=true;                                             // Since millis() stops when sleeping - need this to debounce
        stayAwakeTimeStamp = millis();
     }
@@ -343,7 +344,7 @@ void loop()
       controlRegisterValue = (0b00010000 | controlRegisterValue);       // Turn on connected mode 1 = connected and 0 = disconnected
       FRAMwrite8(FRAM::controlRegisterAddr,controlRegisterValue);       // Write to the control register
       Particle.connect();
-      waitFor(Particle.connected,10000);
+      waitFor(Particle.connected,20000);
       Particle.process();
     }
     takeMeasurements();                                                 // Update Temp, Battery and Signal Strength values
@@ -391,7 +392,9 @@ void recordCount() // This is where we check to see if an interrupt is set when 
   if (millis() - currentEvent -100 >= debounce || awokeFromNap) {     // If this event is outside the debounce time, proceed
     currentEvent = millis();
     awokeFromNap = false;                                             // Reset the awoke flag
-    while(millis() - currentEvent <= debounce) {};                    // Keep us tied up here until the debounce time is almost up
+    while(millis() - currentEvent <= debounce) {                      // Keep us tied up here until the debounce time is almost up
+      delay(100);
+    }
     pinResetFast(blueLED);
   }
   else {
@@ -403,7 +406,7 @@ void recordCount() // This is where we check to see if an interrupt is set when 
   // Diagnostic code
   if (currentMinutePeriod != Time.minute()) {                         // Done counting for the last minute
     currentMinutePeriod = Time.minute();                              // Reset period
-    if (currentMinuteCount > maxMin) maxMin = currentMinuteCount;     // Save only if it is the new maxMin
+    if (currentMinuteCount >= maxMin) maxMin = currentMinuteCount;    // Save only if it is the new maxMin
     currentMinuteCount = 1;                                           // Reset for the new minute
   }
   else currentMinuteCount++;
@@ -416,7 +419,7 @@ void recordCount() // This is where we check to see if an interrupt is set when 
   FRAMwrite32(FRAM::currentCountsTimeAddr, Time.now());             // Write to FRAM - this is so we know when the last counts were saved
   if (verboseMode && Particle.connected()) {
     char data[256];                                                   // Store the date in this character array - not global
-    snprintf(data, sizeof(data), "Car, hourly count: %i, daily count: %i, debounce = %i",hourlyPersonCount,dailyPersonCount,debounce);
+    snprintf(data, sizeof(data), "Car, hourly: %i, daily: %i",hourlyPersonCount,dailyPersonCount);
     Particle.publish("Count",data);                                   // Helpful for monitoring and calibration
   }
 
@@ -439,7 +442,6 @@ void recordCount() // This is where we check to see if an interrupt is set when 
 void sendEvent()
 {
   char data[256];                                                     // Store the date in this character array - not global
-  if (currentMinuteCount > maxMin) maxMin = currentMinuteCount;       // Diagnostic code - cut when done
   float average = 500.0;
   if (wakesPerHour > 0) average = (float)hourlyPersonCount/wakesPerHour;
   snprintf(data, sizeof(data), "{\"hourly\":%i, \"daily\":%i,\"battery\":%i, \"temp\":%i, \"resets\":%i, \"average\":%3.1f, \"maxmin\":%i}",hourlyPersonCount, dailyPersonCount, stateOfCharge, temperatureF,resetCount,average,maxMin);
