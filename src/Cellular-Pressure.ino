@@ -77,7 +77,6 @@ unsigned long stayAwakeTimeStamp = 0;               // Timestamps for our timing
 unsigned long stayAwake;                            // Stores the time we need to wait before napping
 unsigned long webhookTimeStamp = 0;                 // Webhooks...
 unsigned long resetTimeStamp = 0;                   // Resets - this keeps you from falling into a reset loop
-unsigned long publishTimeStamp = 0;                 // Keep track of when we publish a webhook
 unsigned long lastPublish = 0;                      // Can only publish 1/sec on avg and 4/sec burst
 
 // Program Variables
@@ -333,6 +332,7 @@ void loop()
     pinResetFast(ledPower);                                           // Turn off the LED on the module
     pinResetFast(tmp36Shutdwn);                                       // Turns off the temp sensor
     int wakeInSeconds = constrain(wakeBoundary - Time.now() % wakeBoundary, 1, wakeBoundary);
+    petWatchdog();
     System.sleep(SLEEP_MODE_DEEP,wakeInSeconds);                      // Very deep sleep till the next hour - then resets
     } break;
 
@@ -361,7 +361,7 @@ void loop()
       stayAwake = stayAwakeLong;                                      // Keeps Electron awake after reboot - helps with recovery
       stayAwakeTimeStamp = millis();
     }
-    else if (millis() > webhookTimeStamp + webhookWait) {             // If it takes too long - will need to reset
+    else if (millis() - webhookTimeStamp > webhookWait) {             // If it takes too long - will need to reset
       resetTimeStamp = millis();
       state = ERROR_STATE;                                            // Response timed out
     }
