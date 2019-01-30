@@ -32,7 +32,7 @@ namespace FRAM {                                    // Moved to namespace instea
 };
 
 const int versionNumber = 9;                        // Increment this number each time the memory map is changed
-const char releaseNumber[6] = "0.87";               // Displays the release on the menu
+const char releaseNumber[6] = "0.88";               // Displays the release on the menu
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                      // Library for FRAM functions
@@ -63,6 +63,7 @@ const int blueLED =       D7;                       // This LED is on the Electr
 const int userSwitch =    D5;                       // User switch with a pull-up resistor
 // Pin Constants - Sensor
 const int intPin =        B1;                       // Pressure Sensor inerrupt pin
+const int resetPin =      B2;                       // Not currently used - pin that can reset a pressure sensor interrupt
 const int disableModule = B3;                       // Bringining this low turns on the sensor (pull-up on sensor board)
 const int ledPower =      B4;                       // Allows us to control the indicator LED on the sensor board
 
@@ -130,6 +131,7 @@ void setup()                                        // Note: Disconnected Setup(
     to determine which of the three we are in and finish the code
   */
   pinMode(wakeUpPin,INPUT);                         // This pin is active HIGH
+  pinMode(resetPin,INPUT_PULLDOWN);                 // Not used but don't want it floating
   pinMode(userSwitch,INPUT);                        // Momentary contact button on board for direct user input
   pinMode(blueLED, OUTPUT);                         // declare the Blue LED Pin as an output
   pinMode(tmp36Shutdwn,OUTPUT);                     // Supports shutting down the TMP-36 to save juice
