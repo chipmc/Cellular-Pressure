@@ -32,7 +32,7 @@ namespace FRAM {                                    // Moved to namespace instea
 };
 
 const int versionNumber = 9;                        // Increment this number each time the memory map is changed
-const char releaseNumber[6] = "0.83";               // Displays the release on the menu
+const char releaseNumber[6] = "0.87";               // Displays the release on the menu
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                      // Library for FRAM functions
@@ -268,7 +268,8 @@ void loop()
       hourlyPersonCount -= hourlyPersonCountSent;                     // Confirmed that count was recevied - clearing
       FRAMwrite16(FRAM::currentHourlyCountAddr, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
       wakesPerHour = 0;
-      hourlyPersonCountSent = 0;                                      // Zero out the count until next reporting period
+      hourlyPersonCountSent = 0;                                      // Zero out the counts until next reporting period
+      maxMin = 0;
     }
     if (lowPowerMode && (millis() - stayAwakeTimeStamp) > stayAwake) state = NAPPING_STATE;  // When in low power mode, we can nap between taps
     if (Time.hour() != currentHourlyPeriod) state = REPORTING_STATE;  // We want to report on the hour but not after bedtime
@@ -344,7 +345,7 @@ void loop()
       controlRegisterValue = (0b00010000 | controlRegisterValue);       // Turn on connected mode 1 = connected and 0 = disconnected
       FRAMwrite8(FRAM::controlRegisterAddr,controlRegisterValue);       // Write to the control register
       Particle.connect();
-      waitFor(Particle.connected,20000);
+      waitFor(Particle.connected,40000);
       Particle.process();
     }
     takeMeasurements();                                                 // Update Temp, Battery and Signal Strength values
@@ -386,42 +387,38 @@ void loop()
 
 void recordCount() // This is where we check to see if an interrupt is set when not asleep or act on a tap that woke the Arduino
 {
-  sensorDetect = false;                                               // Reset the flag
   pinSetFast(blueLED);                                                // Turn on the blue LED
+  noInterrupts();                                                     // Process without interruption
 
-  if (millis() - currentEvent -100 >= debounce || awokeFromNap) {     // If this event is outside the debounce time, proceed
+  if (millis() - currentEvent >= debounce || awokeFromNap) {          // If this event is outside the debounce time, proceed
     currentEvent = millis();
     awokeFromNap = false;                                             // Reset the awoke flag
-    while(millis() - currentEvent <= debounce) {                      // Keep us tied up here until the debounce time is almost up
+    while(millis() - currentEvent -100 <= debounce) {                 // Keep us tied up here until the debounce time is almost up
       delay(100);
     }
-    pinResetFast(blueLED);
-  }
-  else {
-    if(verboseMode && Particle.connected()) Particle.publish("Event","Debounced");
-    pinResetFast(blueLED);
-    return;
+
+    // Diagnostic code
+    if (currentMinutePeriod != Time.minute()) {                         // Done counting for the last minute
+      currentMinutePeriod = Time.minute();                              // Reset period
+      if (currentMinuteCount >= maxMin) maxMin = currentMinuteCount;    // Save only if it is the new maxMin
+      currentMinuteCount = 1;                                           // Reset for the new minute
+    }
+    else currentMinuteCount++;
+    // End diagnostic code
+
+    hourlyPersonCount++;                                                // Increment the PersonCount
+    FRAMwrite16(FRAM::currentHourlyCountAddr, hourlyPersonCount);       // Load Hourly Count to memory
+    dailyPersonCount++;                                                 // Increment the PersonCount
+    FRAMwrite16(FRAM::currentDailyCountAddr, dailyPersonCount);         // Load Daily Count to memory
+    FRAMwrite32(FRAM::currentCountsTimeAddr, Time.now());             // Write to FRAM - this is so we know when the last counts were saved
+    if (verboseMode && Particle.connected()) {
+      char data[256];                                                   // Store the date in this character array - not global
+      snprintf(data, sizeof(data), "Car, hourly: %i, daily: %i",hourlyPersonCount,dailyPersonCount);
+      Particle.publish("Count",data);                                   // Helpful for monitoring and calibration
+    }
   }
 
-  // Diagnostic code
-  if (currentMinutePeriod != Time.minute()) {                         // Done counting for the last minute
-    currentMinutePeriod = Time.minute();                              // Reset period
-    if (currentMinuteCount >= maxMin) maxMin = currentMinuteCount;    // Save only if it is the new maxMin
-    currentMinuteCount = 1;                                           // Reset for the new minute
-  }
-  else currentMinuteCount++;
-  // End diagnostic code
-
-  hourlyPersonCount++;                                                // Increment the PersonCount
-  FRAMwrite16(FRAM::currentHourlyCountAddr, hourlyPersonCount);       // Load Hourly Count to memory
-  dailyPersonCount++;                                                 // Increment the PersonCount
-  FRAMwrite16(FRAM::currentDailyCountAddr, dailyPersonCount);         // Load Daily Count to memory
-  FRAMwrite32(FRAM::currentCountsTimeAddr, Time.now());             // Write to FRAM - this is so we know when the last counts were saved
-  if (verboseMode && Particle.connected()) {
-    char data[256];                                                   // Store the date in this character array - not global
-    snprintf(data, sizeof(data), "Car, hourly: %i, daily: %i",hourlyPersonCount,dailyPersonCount);
-    Particle.publish("Count",data);                                   // Helpful for monitoring and calibration
-  }
+  else if(verboseMode && Particle.connected()) Particle.publish("Event","Debounced");
 
   if (!digitalRead(userSwitch) && lowPowerMode) {                     // A low value means someone is pushing this button - will trigger a send to Ubidots and take out of low power mode
     Cellular.on();
@@ -436,6 +433,10 @@ void recordCount() // This is where we check to see if an interrupt is set when 
     lowPowerMode = false;
     connectionMode = true;
   }
+
+  pinResetFast(blueLED);
+  interrupts();
+  sensorDetect = false;                                               // Reset the flag
 }
 
 
