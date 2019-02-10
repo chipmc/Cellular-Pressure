@@ -32,7 +32,7 @@ namespace FRAM {                                    // Moved to namespace instea
 };
 
 const int versionNumber = 9;                        // Increment this number each time the memory map is changed
-const char releaseNumber[6] = "0.88";               // Displays the release on the menu
+const char releaseNumber[6] = "0.94";               // Displays the release on the menu ****  this is not a production release ****
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                      // Library for FRAM functions
@@ -139,7 +139,7 @@ void setup()                                        // Note: Disconnected Setup(
   pinMode(donePin,OUTPUT);                          // Allows us to pet the watchdog
   pinMode(hardResetPin,OUTPUT);                     // For a hard reset active HIGH
   // Pressure Module Pin Setup
-  pinMode(intPin,INPUT);                            // pressure sensor interrupt
+  pinMode(intPin,INPUT_PULLDOWN);                   // pressure sensor interrupt
   pinMode(disableModule,OUTPUT);                    // Turns on the module when pulled low
   pinResetFast(disableModule);                      // Turn on the module - send high to switch off board
   pinMode(ledPower,OUTPUT);                         // Turn on the lights
@@ -347,7 +347,7 @@ void loop()
       controlRegisterValue = (0b00010000 | controlRegisterValue);       // Turn on connected mode 1 = connected and 0 = disconnected
       FRAMwrite8(FRAM::controlRegisterAddr,controlRegisterValue);       // Write to the control register
       Particle.connect();
-      waitFor(Particle.connected,40000);
+      waitFor(Particle.connected,60000);
       Particle.process();
     }
     takeMeasurements();                                                 // Update Temp, Battery and Signal Strength values
@@ -390,13 +390,12 @@ void loop()
 void recordCount() // This is where we check to see if an interrupt is set when not asleep or act on a tap that woke the Arduino
 {
   pinSetFast(blueLED);                                                // Turn on the blue LED
-  noInterrupts();                                                     // Process without interruption
 
   if (millis() - currentEvent >= debounce || awokeFromNap) {          // If this event is outside the debounce time, proceed
     currentEvent = millis();
     awokeFromNap = false;                                             // Reset the awoke flag
-    while(millis() - currentEvent -100 <= debounce) {                 // Keep us tied up here until the debounce time is almost up
-      delay(100);
+    while(millis()-currentEvent < debounce) {                                                 // Keep us tied up here until the debounce time is up
+      delay(10);
     }
 
     // Diagnostic code
@@ -404,6 +403,13 @@ void recordCount() // This is where we check to see if an interrupt is set when 
       currentMinutePeriod = Time.minute();                              // Reset period
       if (currentMinuteCount >= maxMin) maxMin = currentMinuteCount;    // Save only if it is the new maxMin
       currentMinuteCount = 1;                                           // Reset for the new minute
+
+      // This is bandaid code for Carver's Creek
+      if (maxMin >= 4) {
+        hourlyPersonCount = hourlyPersonCount - maxMin;
+        dailyPersonCount = dailyPersonCount - maxMin;
+        maxMin = 0;
+      }
     }
     else currentMinuteCount++;
     // End diagnostic code
@@ -419,7 +425,6 @@ void recordCount() // This is where we check to see if an interrupt is set when 
       Particle.publish("Count",data);                                   // Helpful for monitoring and calibration
     }
   }
-
   else if(verboseMode && Particle.connected()) Particle.publish("Event","Debounced");
 
   if (!digitalRead(userSwitch) && lowPowerMode) {                     // A low value means someone is pushing this button - will trigger a send to Ubidots and take out of low power mode
@@ -437,7 +442,6 @@ void recordCount() // This is where we check to see if an interrupt is set when 
   }
 
   pinResetFast(blueLED);
-  interrupts();
   sensorDetect = false;                                               // Reset the flag
 }
 
