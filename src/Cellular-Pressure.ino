@@ -34,7 +34,7 @@ namespace FRAM {                                    // Moved to namespace instea
 };
 
 const int versionNumber = 9;                        // Increment this number each time the memory map is changed
-const char releaseNumber[6] = "0.96";               // Displays the release on the menu ****  this is not a production release ****
+const char releaseNumber[6] = "0.97";               // Displays the release on the menu ****  this is not a production release ****
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                      // Library for FRAM functions
@@ -190,7 +190,6 @@ void setup()                                        // Note: Disconnected Setup(
   }
 
   alerts = FRAMread8(FRAM::alertsCountAddr);                          // Load the alerts count
-  maxMinLimit = FRAMread8(FRAM::maxMinLimitAddr);                         // This is the maximum number of counts in a minute
   resetCount = FRAMread8(FRAM::resetCountAddr);                       // Retrive system recount data from FRAM
   if (System.resetReason() == RESET_REASON_PIN_RESET || System.resetReason() == RESET_REASON_USER)  // Check to see if we are starting from a pin reset or a reset in the sketch
   {
@@ -210,6 +209,9 @@ void setup()                                        // Note: Disconnected Setup(
   int8_t tempFRAMvalue = FRAMread8(FRAM::timeZoneAddr);
   if (tempFRAMvalue <= 12 && tempFRAMvalue >= -12)  Time.zone((float)tempFRAMvalue);  // Load Timezone from FRAM
   else Time.zone(-5);                                                  // Default is EST in case proper value not in FRAM
+  maxMinLimit = FRAMread8(FRAM::maxMinLimitAddr);                      // This is the maximum number of counts in a minute
+  if (maxMinLimit < 2 || maxMinLimit > 30) maxMinLimit = 10;           // If value has never been intialized - reasonable value
+
 
   controlRegisterValue = FRAMread8(FRAM::controlRegisterAddr);        // Read the Control Register for system modes
   lowPowerMode    = (0b00000001 & controlRegisterValue);              // Bitwise AND to set the lowPowerMode flag from control Register
