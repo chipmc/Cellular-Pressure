@@ -29,11 +29,12 @@ namespace FRAM {                                    // Moved to namespace instea
     currentDailyCountAddr = 0xC,                    // Current Daily Count - 16 bits
     currentCountsTimeAddr = 0xE,                    // Time of last count - 32 bits
     alertsCountAddr       = 0x12,                   // Current Hour Alerts Count
+    maxMinLimitAddr       = 0x13,                   // Current value for MaxMin Limit
   };
 };
 
 const int versionNumber = 9;                        // Increment this number each time the memory map is changed
-const char releaseNumber[6] = "0.95";               // Displays the release on the menu ****  this is not a production release ****
+const char releaseNumber[6] = "0.96";               // Displays the release on the menu ****  this is not a production release ****
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                      // Library for FRAM functions
@@ -100,7 +101,7 @@ int openTime;                                       // Park Opening time - (24 h
 int closeTime;                                      // Park Closing time - (24 hr format) sets sleep
 byte currentDailyPeriod;                            // Current day
 byte currentHourlyPeriod;                           // This is where we will know if the period changed
-byte currentMinutePeriod;                           // Current minute
+
 
 
 // Battery monitoring
@@ -120,7 +121,7 @@ int dailyPersonCount = 0;                           // daily counter
 // These are diagnostic measures that I am playing with
 uint8_t alerts = 0;
 int maxMin = 0;                                     // What is the current maximum count in a minute for this reporting period
-int currentMinuteCount = 0;                         // What is the count for the current minute
+int maxMinLimit;
 
 void setup()                                        // Note: Disconnected Setup()
 {
@@ -165,6 +166,8 @@ void setup()                                        // Note: Disconnected Setup(
   Particle.variable("OpenTime",openTime);
   Particle.variable("CloseTime",closeTime);
   Particle.variable("Debounce",debounceStr);
+  Particle.variable("MaxMinLimit",maxMinLimit);
+  Particle.variable("Alerts",alerts);
 
   Particle.function("resetFRAM", resetFRAM);                          // These are the functions exposed to the mobile app and console
   Particle.function("resetCounts",resetCounts);
@@ -177,6 +180,7 @@ void setup()                                        // Note: Disconnected Setup(
   Particle.function("Set-OpenTime",setOpenTime);
   Particle.function("Set-Close",setCloseTime);
   Particle.function("Set-Debounce",setDebounce);
+  Particle.function("Set-MaxMin-Limit",setMaxMinLimit);
 
   // Load FRAM and reset variables to their correct values
   if (!fram.begin()) state = ERROR_STATE;                             // You can stick the new i2c addr in here, e.g. begin(0x51);
@@ -186,6 +190,7 @@ void setup()                                        // Note: Disconnected Setup(
   }
 
   alerts = FRAMread8(FRAM::alertsCountAddr);                          // Load the alerts count
+  maxMinLimit = FRAMread8(FRAM::maxMinLimitAddr);                         // This is the maximum number of counts in a minute
   resetCount = FRAMread8(FRAM::resetCountAddr);                       // Retrive system recount data from FRAM
   if (System.resetReason() == RESET_REASON_PIN_RESET || System.resetReason() == RESET_REASON_USER)  // Check to see if we are starting from a pin reset or a reset in the sketch
   {
@@ -215,7 +220,6 @@ void setup()                                        // Note: Disconnected Setup(
   PMICreset();                                                        // Executes commands that set up the PMIC for Solar charging
 
   currentHourlyPeriod = Time.hour();                                  // Sets the hour period for when the count starts (see #defines)
-  currentMinutePeriod = Time.minute();                                // *** Diagnostic code - set the minute period
   currentDailyPeriod = Time.day();                                    // What day is it?
 
   time_t unixTime = FRAMread32(FRAM::currentCountsTimeAddr);          // Need to reload last recorded event - current periods set from this event
@@ -379,9 +383,10 @@ void loop()
       if (Particle.connected()) Particle.publish("State","ERROR_STATE - Resetting");            // Reset time expired - time to go
       delay(2000);
       alerts++;
+      FRAMwrite8(FRAM::alertsCountAddr,alerts);                       // Save counts in case of reset
       if (resetCount <= 3)  System.reset();                           // Today, only way out is reset
       else {                                                          // If we have had 3 resets - time to do something more
-        FRAMwrite8(FRAM::resetCountAddr,0);                                     // Zero the ResetCount
+        FRAMwrite8(FRAM::resetCountAddr,0);                           // Zero the ResetCount
         fullModemReset();                                             // Full Modem reset and reboots
       }
     }
@@ -392,6 +397,9 @@ void loop()
 
 void recordCount() // This is where we check to see if an interrupt is set when not asleep or act on a tap that woke the Arduino
 {
+  static int currentMinuteCount = 0;                                  // What is the count for the current minute
+  static byte currentMinutePeriod;                                    // Current minute
+
   pinSetFast(blueLED);                                                // Turn on the blue LED
 
   if (millis() - currentEvent >= debounce || awokeFromNap) {          // If this event is outside the debounce time, proceed
@@ -404,19 +412,22 @@ void recordCount() // This is where we check to see if an interrupt is set when 
     // Diagnostic code
     if (currentMinutePeriod != Time.minute()) {                         // Done counting for the last minute
       currentMinutePeriod = Time.minute();                              // Reset period
-      if (currentMinuteCount >= maxMin) maxMin = currentMinuteCount;    // Save only if it is the new maxMin
       currentMinuteCount = 1;                                           // Reset for the new minute
-
-      // This is bandaid code for Carver's Creek
-      if (maxMin >= 6) {
-        hourlyPersonCount -= maxMin;
-        dailyPersonCount -= maxMin;
-        alerts++;
-        maxMin = 0;
-      }
     }
     else currentMinuteCount++;
+
+    if (currentMinuteCount >= maxMin) maxMin = currentMinuteCount;    // Save only if it is the new maxMin
     // End diagnostic code
+
+    // Fix for multiple counts
+    if (currentMinuteCount >= maxMinLimit) {
+      hourlyPersonCount -= currentMinuteCount;
+      dailyPersonCount -= currentMinuteCount;
+      currentMinuteCount = 0;
+      if (Particle.connected()) Particle.publish("Alert", "Exceeded Maxmin limit");
+      alerts++;
+      FRAMwrite8(FRAM::alertsCountAddr,alerts);                       // Save counts in case of reset
+    }
 
     hourlyPersonCount++;                                                // Increment the PersonCount
     FRAMwrite16(FRAM::currentHourlyCountAddr, hourlyPersonCount);       // Load Hourly Count to memory
@@ -739,6 +750,19 @@ int setLowPowerMode(String command)                                   // This is
     lowPowerMode = false;
   }
   FRAMwrite8(FRAM::controlRegisterAddr,controlRegisterValue);        // Write to the control register
+  return 1;
+}
+
+int setMaxMinLimit(String command)
+{
+  char * pEND;
+  char data[256];
+  int tempMaxMinLimit = strtol(command,&pEND,10);                       // Looks for the first integer and interprets it
+  if ((tempMaxMinLimit < 2) || (tempMaxMinLimit > 30)) return 0;   // Make sure it falls in a valid range or send a "fail" result
+  maxMinLimit = tempMaxMinLimit;
+  FRAMwrite8(FRAM::maxMinLimitAddr,maxMinLimit);                             // Store the new value in FRAMwrite8
+  snprintf(data, sizeof(data), "MaxMin limit set to %i",maxMinLimit);
+  if (Particle.connected()) Particle.publish("MaxMin",data,PRIVATE);
   return 1;
 }
 
