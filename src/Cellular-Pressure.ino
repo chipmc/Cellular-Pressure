@@ -28,11 +28,12 @@ namespace FRAM {                                    // Moved to namespace instea
     currentHourlyCountAddr =0x8,                    // Current Hourly Count - 16 bits
     currentDailyCountAddr = 0xC,                    // Current Daily Count - 16 bits
     currentCountsTimeAddr = 0xE,                    // Time of last count - 32 bits
+    alertsCountAddr       = 0x12,                   // Current Hour Alerts Count
   };
 };
 
 const int versionNumber = 9;                        // Increment this number each time the memory map is changed
-const char releaseNumber[6] = "0.94";               // Displays the release on the menu ****  this is not a production release ****
+const char releaseNumber[6] = "0.95";               // Displays the release on the menu ****  this is not a production release ****
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                      // Library for FRAM functions
@@ -117,9 +118,9 @@ int hourlyPersonCountSent = 0;                      // Person count in flight to
 int dailyPersonCount = 0;                           // daily counter
 
 // These are diagnostic measures that I am playing with
-int wakesPerHour = 0;                               // Number of times we wake - diagnostic
+uint8_t alerts = 0;
 int maxMin = 0;                                     // What is the current maximum count in a minute for this reporting period
-int currentMinuteCount = 0;                            // What is the count for the current minute
+int currentMinuteCount = 0;                         // What is the count for the current minute
 
 void setup()                                        // Note: Disconnected Setup()
 {
@@ -184,7 +185,8 @@ void setup()                                        // Note: Disconnected Setup(
     if (FRAMread8(FRAM::versionAddr) != versionNumber)state = ERROR_STATE; // Resetting did not fix the issue
   }
 
-  resetCount = FRAMread8(FRAM::resetCountAddr);                                   // Retrive system recount data from FRAM
+  alerts = FRAMread8(FRAM::alertsCountAddr);                          // Load the alerts count
+  resetCount = FRAMread8(FRAM::resetCountAddr);                       // Retrive system recount data from FRAM
   if (System.resetReason() == RESET_REASON_PIN_RESET || System.resetReason() == RESET_REASON_USER)  // Check to see if we are starting from a pin reset or a reset in the sketch
   {
     resetCount++;
@@ -240,6 +242,7 @@ void setup()                                        // Note: Disconnected Setup(
     FRAMwrite16(FRAM::currentHourlyCountAddr, 0);
     FRAMwrite32(FRAM::currentCountsTimeAddr,Time.now());              // Set the time context to the new day
     FRAMwrite8(FRAM::resetCountAddr,0);
+    FRAMwrite8(FRAM::alertsCountAddr,0);
     hourlyPersonCount = dailyPersonCount = resetCount = 0;            // Reset everything for the day
   }
   if ((Time.hour() >= closeTime || Time.hour() < openTime)) {}       // The park is closed - sleep
@@ -269,9 +272,9 @@ void loop()
     if (hourlyPersonCountSent) {                                      // Cleared here as there could be counts coming in while "in Flight"
       hourlyPersonCount -= hourlyPersonCountSent;                     // Confirmed that count was recevied - clearing
       FRAMwrite16(FRAM::currentHourlyCountAddr, static_cast<uint16_t>(hourlyPersonCount));  // Load Hourly Count to memory
-      wakesPerHour = 0;
       hourlyPersonCountSent = 0;                                      // Zero out the counts until next reporting period
       maxMin = 0;
+      alerts = 0;
     }
     if (lowPowerMode && (millis() - stayAwakeTimeStamp) > stayAwake) state = NAPPING_STATE;  // When in low power mode, we can nap between taps
     if (Time.hour() != currentHourlyPeriod) state = REPORTING_STATE;  // We want to report on the hour but not after bedtime
@@ -311,8 +314,7 @@ void loop()
       delay(1000);                                                    // Bummer but only should happen once an hour
       FRAMwrite8(FRAM::controlRegisterAddr,controlRegisterValue);     // Write to the control register
     }
-    stayAwake = debounce;                                             // Once we come into this function, we need to reset stayAwake as it changes at the top of the hour
-    wakesPerHour++;                                                   // Increment the wakes per hour count
+    stayAwake = debounce;                                             // Once we come into this function, we need to reset stayAwake as it changes at the top of the hour                                                 // Increment the wakes per hour count
     int wakeInSeconds = constrain(wakeBoundary - Time.now() % wakeBoundary, 1, wakeBoundary);
     petWatchdog();                                                    // Reset the watchdog
     System.sleep(intPin, RISING, wakeInSeconds);                      // Sensor will wake us with an interrupt or timeout at the hour
@@ -376,6 +378,7 @@ void loop()
     {
       if (Particle.connected()) Particle.publish("State","ERROR_STATE - Resetting");            // Reset time expired - time to go
       delay(2000);
+      alerts++;
       if (resetCount <= 3)  System.reset();                           // Today, only way out is reset
       else {                                                          // If we have had 3 resets - time to do something more
         FRAMwrite8(FRAM::resetCountAddr,0);                                     // Zero the ResetCount
@@ -405,9 +408,10 @@ void recordCount() // This is where we check to see if an interrupt is set when 
       currentMinuteCount = 1;                                           // Reset for the new minute
 
       // This is bandaid code for Carver's Creek
-      if (maxMin >= 4) {
-        hourlyPersonCount = hourlyPersonCount - maxMin;
-        dailyPersonCount = dailyPersonCount - maxMin;
+      if (maxMin >= 6) {
+        hourlyPersonCount -= maxMin;
+        dailyPersonCount -= maxMin;
+        alerts++;
         maxMin = 0;
       }
     }
@@ -449,10 +453,8 @@ void recordCount() // This is where we check to see if an interrupt is set when 
 void sendEvent()
 {
   char data[256];                                                     // Store the date in this character array - not global
-  float average = 500.0;
-  if (wakesPerHour > 0) average = (float)hourlyPersonCount/wakesPerHour;
-  snprintf(data, sizeof(data), "{\"hourly\":%i, \"daily\":%i,\"battery\":%i, \"temp\":%i, \"resets\":%i, \"average\":%3.1f, \"maxmin\":%i}",hourlyPersonCount, dailyPersonCount, stateOfCharge, temperatureF,resetCount,average,maxMin);
-  Particle.publish("Ubidots-Test-Hook-2", data, PRIVATE);
+  snprintf(data, sizeof(data), "{\"hourly\":%i, \"daily\":%i,\"battery\":%i, \"temp\":%i, \"resets\":%i, \"alerts\":%i, \"maxmin\":%i}",hourlyPersonCount, dailyPersonCount, stateOfCharge, temperatureF, resetCount, alerts, maxMin);
+  Particle.publish("Ubidots-Car-Hook", data, PRIVATE);
   webhookTimeStamp = millis();
   hourlyPersonCountSent = hourlyPersonCount;                          // This is the number that was sent to Ubidots - will be subtracted once we get confirmation
   currentHourlyPeriod = Time.hour();                                  // Change the time period
