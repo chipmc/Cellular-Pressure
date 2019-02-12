@@ -34,7 +34,7 @@ namespace FRAM {                                    // Moved to namespace instea
 };
 
 const int versionNumber = 9;                        // Increment this number each time the memory map is changed
-const char releaseNumber[6] = "0.97";               // Displays the release on the menu ****  this is not a production release ****
+const char releaseNumber[6] = "0.98";               // Displays the release on the menu ****  this is not a production release ****
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                      // Library for FRAM functions
@@ -119,7 +119,7 @@ int hourlyPersonCountSent = 0;                      // Person count in flight to
 int dailyPersonCount = 0;                           // daily counter
 
 // These are diagnostic measures that I am playing with
-uint8_t alerts = 0;
+int alerts = 0;
 int maxMin = 0;                                     // What is the current maximum count in a minute for this reporting period
 int maxMinLimit;
 
