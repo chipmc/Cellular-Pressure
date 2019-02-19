@@ -102,8 +102,6 @@ int closeTime;                                      // Park Closing time - (24 h
 byte currentDailyPeriod;                            // Current day
 byte currentHourlyPeriod;                           // This is where we will know if the period changed
 
-
-
 // Battery monitoring
 int stateOfCharge = 0;                              // stores battery charge level value
 int lowBattLimit;                                   // Trigger for Low Batt State - value set in PMIC function
@@ -112,16 +110,16 @@ int lowBattLimit;                                   // Trigger for Low Batt Stat
 // Pressure Sensor Variables
 int debounce;                                       // This is the numerical value of debounce - in millis()
 char debounceStr[8] = "NA";                         // String to make debounce more readalbe on the mobile app
-volatile bool sensorDetect = false;         // This is the flag that an interrupt is triggered
-unsigned long currentEvent = 0;    // Time for the current sensor event
+volatile bool sensorDetect = false;                 // This is the flag that an interrupt is triggered
+unsigned long currentEvent = 0;                     // Time for the current sensor event
 int hourlyPersonCount = 0;                          // hourly counter
 int hourlyPersonCountSent = 0;                      // Person count in flight to Ubidots
 int dailyPersonCount = 0;                           // daily counter
 
 // These are diagnostic measures that I am playing with
-int alerts = 0;
+int alerts = 0;                                     // Alerts are triggered when MaxMinLimit is exceeded or a reset due to errors
 int maxMin = 0;                                     // What is the current maximum count in a minute for this reporting period
-int maxMinLimit;
+int maxMinLimit;                                    // Counts above this amount will be deemed erroroneus
 
 void setup()                                        // Note: Disconnected Setup()
 {
@@ -241,7 +239,7 @@ void setup()                                        // Note: Disconnected Setup(
     }
   }
 
-  // Here is where the code diverges based on the state
+  // Here is where the code diverges based on why we are running Setup()
   // Deterimine when the last counts were taken check when starting test to determine if we reload values or start counts over
   if (currentDailyPeriod != Time.day(unixTime)) {                     // The device is waking up in a new day or is a new install
     FRAMwrite16(FRAM::currentDailyCountAddr, 0);                      // Reset the counts in FRAM as well
@@ -251,13 +249,13 @@ void setup()                                        // Note: Disconnected Setup(
     FRAMwrite8(FRAM::alertsCountAddr,0);
     hourlyPersonCount = dailyPersonCount = resetCount = 0;            // Reset everything for the day
   }
-  if ((Time.hour() >= closeTime || Time.hour() < openTime)) {}       // The park is closed - sleep
+  if ((Time.hour() >= closeTime || Time.hour() < openTime)) {}        // The park is closed - sleep
   else {                                                              // Park is open let's get ready for the day
     attachInterrupt(intPin, sensorISR, RISING);                       // Pressure Sensor interrupt from low to high
 
     if (connectionMode) {                                             // Only going to connect if we are in connectionMode
       Particle.connect();
-      waitFor(Particle.connected,20000);                              // 20 seconds then we timeout  -- *** need to add disconnected option and test
+      waitFor(Particle.connected,60000);                              // 60 seconds then we timeout  -- *** need to add disconnected option and test
       Particle.process();
     }
 
@@ -355,12 +353,11 @@ void loop()
       controlRegisterValue = (0b00010000 | controlRegisterValue);       // Turn on connected mode 1 = connected and 0 = disconnected
       FRAMwrite8(FRAM::controlRegisterAddr,controlRegisterValue);       // Write to the control register
       Particle.connect();
-      waitFor(Particle.connected,60000);
+      waitFor(Particle.connected,60000);                                // Give us up to 60 seconds to connect
       Particle.process();
     }
     takeMeasurements();                                                 // Update Temp, Battery and Signal Strength values
     sendEvent();                                                        // Send data to Ubidots
-    webhookTimeStamp = millis();
     state = RESP_WAIT_STATE;                                            // Wait for Response
     break;
 
@@ -407,14 +404,14 @@ void recordCount() // This is where we check to see if an interrupt is set when 
   if (millis() - currentEvent >= debounce || awokeFromNap) {          // If this event is outside the debounce time, proceed
     currentEvent = millis();
     awokeFromNap = false;                                             // Reset the awoke flag
-    while(millis()-currentEvent < debounce) {                                                 // Keep us tied up here until the debounce time is up
+    while(millis()-currentEvent < debounce) {                         // Keep us tied up here until the debounce time is up
       delay(10);
     }
 
     // Diagnostic code
-    if (currentMinutePeriod != Time.minute()) {                         // Done counting for the last minute
-      currentMinutePeriod = Time.minute();                              // Reset period
-      currentMinuteCount = 1;                                           // Reset for the new minute
+    if (currentMinutePeriod != Time.minute()) {                       // Done counting for the last minute
+      currentMinutePeriod = Time.minute();                            // Reset period
+      currentMinuteCount = 1;                                         // Reset for the new minute
     }
     else currentMinuteCount++;
 
@@ -447,7 +444,7 @@ void recordCount() // This is where we check to see if an interrupt is set when 
   if (!digitalRead(userSwitch) && lowPowerMode) {                     // A low value means someone is pushing this button - will trigger a send to Ubidots and take out of low power mode
     Cellular.on();
     Particle.connect();
-    waitFor(Particle.connected,30000);
+    waitFor(Particle.connected,60000);                                // Give us up to 60 seconds to connect
     Particle.process();
     if (Particle.connected()) Particle.publish("Mode","Normal Operations");
     controlRegisterValue = FRAMread8(FRAM::controlRegisterAddr);      // Load the control register
@@ -743,9 +740,9 @@ int setLowPowerMode(String command)                                   // This is
       lastPublish = millis();
     }
     if (!(0b00010000 & controlRegisterValue)) {
-      controlRegisterValue = (0b00010000 | controlRegisterValue);       // Turn on connected mode 1 = connected and 0 = disconnected
+      controlRegisterValue = (0b00010000 | controlRegisterValue);    // Turn on connected mode 1 = connected and 0 = disconnected
       Particle.connect();
-      waitFor(Particle.connected,10000);
+      waitFor(Particle.connected,60000);                             // Give us 60 seconds to connect
       Particle.process();
     }
     controlRegisterValue = (0b11111110 & controlRegisterValue);      // If so, flip the lowPowerMode bit
