@@ -34,7 +34,7 @@ namespace FRAM {                                    // Moved to namespace instea
 };
 
 const int versionNumber = 9;                        // Increment this number each time the memory map is changed
-const char releaseNumber[6] = "0.98";               // Displays the release on the menu ****  this is not a production release ****
+const char releaseNumber[6] = "1.00";               // Displays the release on the menu ****  this is not a production release ****
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                      // Library for FRAM functions
@@ -231,7 +231,7 @@ void setup()                                        // Note: Disconnected Setup(
     controlRegisterValue = (0b11111110 & controlRegisterValue);       // Turn off Low power mode
     controlRegisterValue = (0b00010000 | controlRegisterValue);       // Turn on the connectionMode
     FRAMwrite8(FRAM::controlRegisterAddr,controlRegisterValue);       // Write it to the register
-    if ((Time.hour() >= closeTime || Time.hour() < openTime))  {      // Device may also be sleeping due to time or TimeZone setting
+    if ((Time.hour() > closeTime || Time.hour() < openTime))  {       // Device may also be sleeping due to time or TimeZone setting
       openTime = 0;                                                   // Only change these values if it is an issue
       FRAMwrite8(FRAM::openTimeAddr,0);                               // Reset open and close time values to ensure device is awake
       closeTime = 23;
@@ -249,16 +249,14 @@ void setup()                                        // Note: Disconnected Setup(
     FRAMwrite8(FRAM::alertsCountAddr,0);
     hourlyPersonCount = dailyPersonCount = resetCount = 0;            // Reset everything for the day
   }
-  if ((Time.hour() >= closeTime || Time.hour() < openTime)) {}        // The park is closed - sleep
+  if ((Time.hour() > closeTime || Time.hour() < openTime)) {}         // The park is closed - sleep
   else {                                                              // Park is open let's get ready for the day
     attachInterrupt(intPin, sensorISR, RISING);                       // Pressure Sensor interrupt from low to high
-
     if (connectionMode) {                                             // Only going to connect if we are in connectionMode
       Particle.connect();
       waitFor(Particle.connected,60000);                              // 60 seconds then we timeout  -- *** need to add disconnected option and test
       Particle.process();
     }
-
     takeMeasurements();                                                 // Populates values so you can read them before the hour
     stayAwake = stayAwakeLong;                                          // Keeps Electron awake after reboot - helps with recovery
   }
@@ -282,7 +280,7 @@ void loop()
     }
     if (lowPowerMode && (millis() - stayAwakeTimeStamp) > stayAwake) state = NAPPING_STATE;  // When in low power mode, we can nap between taps
     if (Time.hour() != currentHourlyPeriod) state = REPORTING_STATE;  // We want to report on the hour but not after bedtime
-    if ((Time.hour() >= closeTime || Time.hour() < openTime)) state = SLEEPING_STATE;   // The park is closed - sleep
+    if ((Time.hour() > closeTime || Time.hour() < openTime)) state = SLEEPING_STATE;   // The park is closed - sleep
     if (stateOfCharge <= lowBattLimit) state = LOW_BATTERY_STATE;     // The battery is low - sleep
     break;
 
