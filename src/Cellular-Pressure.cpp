@@ -1,3 +1,5 @@
+#include "application.h"
+#line 1 "/Users/chipmc/Documents/Personal/Maker/Particle/Projects/Cellular-Pressure/src/Cellular-Pressure.ino"
 /*
 * Project Cellular-MMA8452Q - converged software for Low Power and Solar
 * Description: Cellular Connected Data Logger for Utility and Solar powered installations
@@ -15,13 +17,35 @@
     Control Register - bits 7-5, 4-Connected Status, 3 - Verbose Mode, 2- Solar Power Mode, 1 - Low Battery Mode, 0 - Low Power Mode
 */
 
-//v1.02 - Updated to zero alerts on reset and clear
-//v1.03 - Enabled 24 hour operations
-//v1.04 - Makes sure count gets reset at 11pm since Ubidots will miscount if we wait till midnight
-//v1.04a - Fix to 1.04 for non-zero count hours
-//v1.04b - Makes sure reset happens at 2300 hours - so Ubidots counts correctly
 
-
+void setup();
+void loop();
+void recordCount();
+void sendEvent();
+void UbidotsHandler(const char *event, const char *data);
+void takeMeasurements();
+void getSignalStrength();
+int getTemperature();
+void sensorISR();
+void watchdogISR();
+void petWatchdog();
+void PMICreset();
+int resetFRAM(String command);
+int resetCounts(String command);
+int hardResetNow(String command);
+int setDebounce(String command);
+int sendNow(String command);
+int setSolarMode(String command);
+int setVerboseMode(String command);
+int setTimeZone(String command);
+int setOpenTime(String command);
+int setCloseTime(String command);
+int setLowPowerMode(String command);
+int setMaxMinLimit(String command);
+bool meterParticlePublish(void);
+void publishStateTransition(void);
+void fullModemReset();
+#line 19 "/Users/chipmc/Documents/Personal/Maker/Particle/Projects/Cellular-Pressure/src/Cellular-Pressure.ino"
 namespace FRAM {                                    // Moved to namespace instead of #define to limit scope
   enum Addresses {
     versionAddr           = 0x0,                    // Where we store the memory map version number
@@ -40,7 +64,7 @@ namespace FRAM {                                    // Moved to namespace instea
 };
 
 const int versionNumber = 9;                        // Increment this number each time the memory map is changed
-const char releaseNumber[6] = "1.04b";               // Displays the release on the menu ****  this is not a production release ****
+const char releaseNumber[6] = "1.01";               // Displays the release on the menu ****  this is not a production release ****
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                      // Library for FRAM functions
@@ -247,7 +271,14 @@ void setup()                                        // Note: Disconnected Setup(
 
   // Here is where the code diverges based on why we are running Setup()
   // Deterimine when the last counts were taken check when starting test to determine if we reload values or start counts over
-  if (currentDailyPeriod != Time.day(unixTime)) resetEverything();    // Zero the counts for the new day
+  if (currentDailyPeriod != Time.day(unixTime)) {                     // The device is waking up in a new day or is a new install
+    FRAMwrite16(FRAM::currentDailyCountAddr, 0);                      // Reset the counts in FRAM as well
+    FRAMwrite16(FRAM::currentHourlyCountAddr, 0);
+    FRAMwrite32(FRAM::currentCountsTimeAddr,Time.now());              // Set the time context to the new day
+    FRAMwrite8(FRAM::resetCountAddr,0);
+    FRAMwrite8(FRAM::alertsCountAddr,0);
+    hourlyPersonCount = dailyPersonCount = resetCount = 0;            // Reset everything for the day
+  }
   if ((Time.hour() > closeTime || Time.hour() < openTime)) {}         // The park is closed - sleep
   else {                                                              // Park is open let's get ready for the day
     attachInterrupt(intPin, sensorISR, RISING);                       // Pressure Sensor interrupt from low to high
@@ -276,8 +307,6 @@ void loop()
       hourlyPersonCountSent = 0;                                      // Zero out the counts until next reporting period
       maxMin = 0;
       alerts = 0;
-      FRAMwrite8(FRAM::alertsCountAddr,0);
-      if (currentHourlyPeriod == 23) resetEverything();                // We have reported for the previous day - reset for the next.
     }
     if (lowPowerMode && (millis() - stayAwakeTimeStamp) > stayAwake) state = NAPPING_STATE;  // When in low power mode, we can nap between taps
     if (Time.hour() != currentHourlyPeriod) state = REPORTING_STATE;  // We want to report on the hour but not after bedtime
@@ -465,9 +494,8 @@ void sendEvent()
   snprintf(data, sizeof(data), "{\"hourly\":%i, \"daily\":%i,\"battery\":%i, \"temp\":%i, \"resets\":%i, \"alerts\":%i, \"maxmin\":%i}",hourlyPersonCount, dailyPersonCount, stateOfCharge, temperatureF, resetCount, alerts, maxMin);
   Particle.publish("Ubidots-Car-Hook", data, PRIVATE);
   webhookTimeStamp = millis();
-  currentHourlyPeriod = Time.hour();                                  // Change the time period
-  if(currentHourlyPeriod == 23) hourlyPersonCount++;                  // Ensures we don't have a zero here at midnigtt
   hourlyPersonCountSent = hourlyPersonCount;                          // This is the number that was sent to Ubidots - will be subtracted once we get confirmation
+  currentHourlyPeriod = Time.hour();                                  // Change the time period
   dataInFlight = true;                                                // set the data inflight flag
 }
 
@@ -573,8 +601,6 @@ int resetCounts(String command)                                       // Resets 
     FRAMwrite16(FRAM::currentDailyCountAddr, 0);                      // Reset Daily Count in memory
     FRAMwrite16(FRAM::currentHourlyCountAddr, 0);                     // Reset Hourly Count in memory
     FRAMwrite8(FRAM::resetCountAddr,0);                               // If so, store incremented number - watchdog must have done This
-    FRAMwrite8(FRAM::alertsCountAddr,0);
-    alerts = 0;
     resetCount = 0;
     hourlyPersonCount = 0;                                            // Reset count variables
     dailyPersonCount = 0;
@@ -620,16 +646,6 @@ int sendNow(String command) // Function to force sending data in current hour
     return 1;
   }
   else return 0;
-}
-
-void resetEverything() {                                            // The device is waking up in a new day or is a new install
-  FRAMwrite16(FRAM::currentDailyCountAddr, 0);                      // Reset the counts in FRAM as well
-  FRAMwrite16(FRAM::currentHourlyCountAddr, 0);
-  FRAMwrite32(FRAM::currentCountsTimeAddr,Time.now());              // Set the time context to the new day
-  FRAMwrite8(FRAM::resetCountAddr,0);
-  FRAMwrite8(FRAM::alertsCountAddr,0);
-  FRAMwrite8(FRAM::alertsCountAddr,0);
-  hourlyPersonCount = dailyPersonCount = resetCount = alerts = 0;   // Reset everything for the day
 }
 
 int setSolarMode(String command) // Function to force sending data in current hour

@@ -30,4 +30,11 @@
 *.exe
 *.out
 *.app
+
+VSCode Stuff
 *.bin
+*.elf
+*.hex
+*.lst
+*.bin.*
+*.map
