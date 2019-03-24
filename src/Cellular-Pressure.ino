@@ -20,6 +20,7 @@
 //v1.04 - Makes sure count gets reset at 11pm since Ubidots will miscount if we wait till midnight
 //v1.04a - Fix to 1.04 for non-zero count hours
 //v1.04b - Makes sure reset happens at 2300 hours - so Ubidots counts correctly
+//v1.05 - Updated the Signal reporting for the console / mobile app
 
 
 namespace FRAM {                                    // Moved to namespace instead of #define to limit scope
@@ -40,7 +41,7 @@ namespace FRAM {                                    // Moved to namespace instea
 };
 
 const int versionNumber = 9;                        // Increment this number each time the memory map is changed
-const char releaseNumber[6] = "1.04b";               // Displays the release on the menu ****  this is not a production release ****
+const char releaseNumber[6] = "1.05";               // Displays the release on the menu ****  this is not a production release ****
 
 // Included Libraries
 #include "Adafruit_FRAM_I2C.h"                      // Library for FRAM functions
@@ -99,8 +100,8 @@ bool lowPowerMode;                                  // Flag for Low Power Mode o
 bool connectionMode;                                // Need to store if we are going to connect or not in the register
 bool solarPowerMode;                                // Changes the PMIC settings
 bool verboseMode;                                   // Enables more active communications for configutation and setup
-char SignalString[17];                              // Used to communicate Wireless RSSI and Description
-const char* levels[6] = {"Poor", "Low", "Medium", "Good", "Very Good", "Great"};
+char SignalString[64];                     // Used to communicate Wireless RSSI and Description
+const char* radioTech[8] = {"Unknown","None","WiFi","GSM","UMTS","CDMA","LTE","IEEE802154"};
 
 // Time Related Variables
 int openTime;                                       // Park Opening time - (24 hr format) sets waking
@@ -499,10 +500,18 @@ void takeMeasurements()
 
 void getSignalStrength()
 {
-  CellularSignal sig = Cellular.RSSI();                             // Prototype for Cellular Signal Montoring
-  int rssi = sig.rssi;
-  int strength = map(rssi, -131, -51, 0, 5);
-  snprintf(SignalString,17, "%s: %d", levels[strength], rssi);
+  // New Signal Strength capability - https://community.particle.io/t/boron-lte-and-cellular-rssi-funny-values/45299/8
+  CellularSignal sig = Cellular.RSSI();
+
+  auto rat = sig.getAccessTechnology();
+
+  //float strengthVal = sig.getStrengthValue();
+  float strengthPercentage = sig.getStrength();
+
+  //float qualityVal = sig.getQualityValue();
+  float qualityPercentage = sig.getQuality();
+
+  snprintf(SignalString,sizeof(SignalString), "%s S:%2.0f%%, Q:%2.0f%% ", radioTech[rat], strengthPercentage, qualityPercentage);
 }
 
 int getTemperature()
